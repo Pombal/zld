@@ -1,4 +1,6 @@
 const std = @import("std");
+const build_options = @import("build_options");
+const builtin = std.builtin;
 const mem = std.mem;
 const testing = std.testing;
 const process = std.process;
@@ -220,12 +222,33 @@ pub const TestContext = struct {
                 }
             }
 
-            const filetype = case.input_files.items[0].filetype;
-            if (filetype == .Zig) {
-                const zig_compiler_rt_path = try std.fs.path.join(allocator, &[_][]const u8{
-                    "test", "assets", @tagName(case.target.cpu_arch.?), "libcompiler_rt.a",
+            // compiler_rt
+            const compiler_rt_path = try std.fs.path.join(allocator, &[_][]const u8{
+                "test", "assets", target_triple, "libcompiler_rt.a",
+            });
+            try filenames.append(compiler_rt_path);
+
+            if (case.target.getAbi() == .musl) {
+                // crt1
+                const crt1_path = try std.fs.path.join(allocator, &[_][]const u8{
+                    "test", "assets", target_triple, "crt1.o",
                 });
-                try filenames.append(zig_compiler_rt_path);
+                try filenames.append(crt1_path);
+                // crti
+                const crti_path = try std.fs.path.join(allocator, &[_][]const u8{
+                    "test", "assets", target_triple, "crti.o",
+                });
+                try filenames.append(crti_path);
+                // crtn
+                const crtn_path = try std.fs.path.join(allocator, &[_][]const u8{
+                    "test", "assets", target_triple, "crtn.o",
+                });
+                try filenames.append(crtn_path);
+                // libc
+                const libc_path = try std.fs.path.join(allocator, &[_][]const u8{
+                    "test", "assets", target_triple, "libc.a",
+                });
+                try filenames.append(libc_path);
             }
 
             const output_path = try std.fs.path.join(allocator, &[_][]const u8{
@@ -249,10 +272,7 @@ pub const TestContext = struct {
                 .framework_dirs = &[0][]const u8{},
                 .rpath_list = &[0][]const u8{},
             });
-            defer {
-                zld.closeFiles();
-                zld.deinit();
-            }
+            defer zld.deinit();
 
             var argv = std.ArrayList([]const u8).init(allocator);
             defer argv.deinit();
@@ -262,6 +282,13 @@ pub const TestContext = struct {
                     .native => {
                         try zld.flush();
                         try argv.append("./a.out");
+                    },
+                    .qemu => |qemu_bin_name| if (build_options.enable_qemu) {
+                        try zld.flush();
+                        try argv.append(qemu_bin_name);
+                        try argv.append("./a.out");
+                    } else {
+                        break :outer;
                     },
                     else => {
                         // TODO simply pass the test
@@ -278,6 +305,7 @@ pub const TestContext = struct {
                     allocator.free(result.stdout);
                     allocator.free(result.stderr);
                 }
+
                 if (case.expected_out.stdout != null or case.expected_out.stderr != null) {
                     if (case.expected_out.stderr) |err| {
                         const pass = mem.eql(u8, result.stderr, err);
